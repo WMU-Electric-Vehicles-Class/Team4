@@ -4,44 +4,6 @@ import scipy.integrate
 
 
 class e_tron:
-    class Chassis:
-        def __init__(self, parent):
-            self.parent = parent
-
-            # Mass
-            self.curb_weight = 2490  # Mass without cargo or passengers, kg  https://www.evspecifications.com/en/model/bad6f3
-            g = 9.81
-            self.W = self.curb_weight * g
-
-            # Aerodynamics
-            self.rho = 1.225  # Density of air at STP, kg/m^3
-            self.Cd = 0.28  # Coefficient of drag  https://www.evspecifications.com/en/model/bad6f3
-            self.A = 2.65  # Frontal area, m^2 https://www.carfolio.com/audi-e-tron-55-quattro-602580
-
-            # Rolling resistance
-            self.mu_rr = 0.015
-            # Frr = µrr * W  eq 4.31
-            self.F_rr = self.mu_rr * self.W
-
-        def step(self):
-            # F = m * a
-            self.net_force = self.curb_weight * self.parent.acceleration
-            # Fd = 1/2 * ρ * Cd * A * v^2  eq 4.32
-            self.drag_force = (
-                1 / 2 * self.rho * self.parent.velocity**2 * self.Cd * self.A
-            )
-            # Sum of horizontal forces: F = Fw - Fd - Frr
-            # Ft = F + Fd + Frr
-            all_wheel_force = self.net_force + self.drag_force + self.F_rr
-            if all_wheel_force >= 0:
-                self.driving_force = all_wheel_force
-                self.braking_force = 0
-            elif all_wheel_force < 0:
-                self.driving_force = 0
-                self.braking_force = all_wheel_force
-            self.traction_force_per_wheel = self.driving_force / 4
-            # This force is for every wheel (e-trons are AWD), positive is traction, negative is braking
-
     class Wheel:
         def __init__(self, parent):
             self.parent = parent
@@ -52,8 +14,6 @@ class e_tron:
             self.tire_radius = tire_radius_in * INCH_TO_M  # meters
 
         def step(self):
-            self.force = self.parent.chassis.traction_force_per_wheel
-            self.torque = self.force * self.tire_radius  # N*m
             self.angular_velocity = self.parent.velocity / self.tire_radius
 
     class Gearbox:
@@ -62,20 +22,16 @@ class e_tron:
 
             # https://electrichasgoneaudi.net/models/e-tron/drivetrain/motor/
             # https://static.nhtsa.gov/odi/tsbs/2019/MC-10155750-9999.pdf
-            # Front gearbox torque ratio (APA250)
+            # Front gearbox torque ratio
             self.front_ratio = 9.205
-            # Rear gearbox torque ratio (AKA320)
+            # Rear gearbox torque ratio
             self.rear_ratio = 9.083
 
         def step(self):
             wheel_angular_velocity = self.parent.wheel.angular_velocity
-            wheel_torque = self.parent.wheel.torque
 
             self.front_motor_speed = wheel_angular_velocity * self.front_ratio
-            self.front_motor_torque = wheel_torque / self.front_ratio
-
             self.rear_motor_speed = wheel_angular_velocity * self.rear_ratio
-            self.rear_motor_torque = wheel_torque / self.rear_ratio
 
     class Motor:
         def __init__(self, parent):
@@ -173,22 +129,25 @@ class e_tron:
                 raise Exception("Motor velocity out of bounds")
 
         def step(self):
-            self.front_angular_velocity = self.parent.gearbox.front_motor_speed
-            self.front_torque = self.parent.gearbox.front_motor_torque
+            self.speed_front = self.parent.gearbox.front_motor_speed
+            self.speed_rear = self.parent.gearbox.rear_motor_speed
 
-            self.front_nmr = self.front_angular_velocity * 60 / (2 * np.pi)
+            # Calculate RPM
+            self.nmr_front = self.front_angular_velocity * 60 / (2 * np.pi)
+            self.nmr_rear = self.rear_angular_velocity * 60 / (2 * np.pi)
 
+            # Calculate output torque
+            self.Tm_front = self.front_torque_Nm(self.front_nmr)
+            self.Tm_rear = self.rear_torque_Nm(self.rear_nmr)
+
+            # Calculate output power
+            self.Pout_front = self.front_power_kW(self.front_nmr)
+            self.Pout_rear = self.rear_power_kW(self.rear_nmr)
+
+            # Calculate supply frequencies
             # nmr = 120 * fs / p
-            self.fs = self.p / 120 * self.front_nmr  # Supply frequency, Hz
-
-            print(self.parent.acceleration, self.front_torque)
-
-            """a.append(self.front_torque)
-            b.append(self.front_torque_Nm(self.front_nmr))
-            print(self.front_torque, self.front_torque_Nm(self.front_nmr))"""
-
-            self.rear_angular_velocity = self.parent.gearbox.rear_motor_speed
-            self.rear_torque = self.parent.gearbox.rear_motor_torque
+            self.fs_front = self.p / 120 * self.front_nmr  # Front supply frequency, Hz
+            self.fs_rear = self.p / 120 * self.rear_nmr
 
     class Battery:
         def __init__(self, parent, SOC_initial):
@@ -209,7 +168,6 @@ class e_tron:
             pass
 
     def __init__(self, SOC_initial=1.00):
-        self.chassis = self.Chassis(self)
         self.wheel = self.Wheel(self)
         self.gearbox = self.Gearbox(self)
         self.motor = self.Motor(self)
@@ -245,7 +203,6 @@ class e_tron:
                 self.ds = 0
                 self.acceleration = 0
 
-            self.chassis.step()
             self.wheel.step()
             self.gearbox.step()
             self.motor.step()
