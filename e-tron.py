@@ -9,7 +9,9 @@ class e_tron:
             self.parent = parent
 
             # Mass
-            self.curb_weight = 2490  # Mass without cargo or passengers  https://www.evspecifications.com/en/model/bad6f3
+            self.curb_weight = 2490  # Mass without cargo or passengers, kg  https://www.evspecifications.com/en/model/bad6f3
+            g = 9.81
+            self.W = self.curb_weight * g
 
             # Aerodynamics
             self.rho = 1.225  # Density of air at STP, kg/m^3
@@ -18,26 +20,26 @@ class e_tron:
 
             # Rolling resistance
             self.mu_rr = 0.015
-            # Frr = µrr * m * g
-            self.rr_force = self.mu_rr * self.curb_weight * 9.81
+            # Frr = µrr * W  eq 4.31
+            self.F_rr = self.mu_rr * self.W
 
         def step(self):
             # F = m * a
             self.net_force = self.curb_weight * self.parent.acceleration
-            # Fd = 1/2 * ρ * v^2 * Cd * A
+            # Fd = 1/2 * ρ * Cd * A * v^2  eq 4.32
             self.drag_force = (
                 1 / 2 * self.rho * self.parent.velocity**2 * self.Cd * self.A
             )
             # Sum of horizontal forces: F = Fw - Fd - Frr
             # Ft = F + Fd + Frr
-            all_wheel_force = self.net_force + self.drag_force + self.rr_force
+            all_wheel_force = self.net_force + self.drag_force + self.F_rr
             if all_wheel_force >= 0:
-                self.traction_force = all_wheel_force
+                self.driving_force = all_wheel_force
                 self.braking_force = 0
             elif all_wheel_force < 0:
-                self.traction_force = 0
+                self.driving_force = 0
                 self.braking_force = all_wheel_force
-            self.traction_force_per_wheel = self.traction_force / 4
+            self.traction_force_per_wheel = self.driving_force / 4
             # This force is for every wheel (e-trons are AWD), positive is traction, negative is braking
 
     class Wheel:
@@ -59,10 +61,11 @@ class e_tron:
             self.parent = parent
 
             # https://electrichasgoneaudi.net/models/e-tron/drivetrain/motor/
-            # Front gearbox ratio (APA250)
+            # https://static.nhtsa.gov/odi/tsbs/2019/MC-10155750-9999.pdf
+            # Front gearbox torque ratio (APA250)
             self.front_ratio = 9.205
-            # Rear gearbox ratio (AKA320)
-            self.rear_ratio = 9.08
+            # Rear gearbox torque ratio (AKA320)
+            self.rear_ratio = 9.083
 
         def step(self):
             wheel_angular_velocity = self.parent.wheel.angular_velocity
@@ -78,14 +81,8 @@ class e_tron:
         def __init__(self, parent):
             self.parent = parent
 
-            # Number of poles
-            self.p = 4
-
-            # Front motor (EASA)
-            # Torque by angular velocity
-            # https://static.nhtsa.gov/odi/tsbs/2019/MC-10155750-9999.pdf
-
-            # Rear motor (EAWA)
+            self.p = 4  # Number of poles
+            self.voltage = 360  # V
 
         def front_torque_Nm(self, rpm):
             # Piecewise front motor torque vs. speed curve
@@ -177,9 +174,18 @@ class e_tron:
 
         def step(self):
             self.front_angular_velocity = self.parent.gearbox.front_motor_speed
-            self.front_rpm = self.front_angular_velocity * 60 / (2 * np.pi)
             self.front_torque = self.parent.gearbox.front_motor_torque
-            print(self.front_torque, self.front_torque_Nm(self.front_rpm))
+
+            self.front_nmr = self.front_angular_velocity * 60 / (2 * np.pi)
+
+            # nmr = 120 * fs / p
+            self.fs = self.p / 120 * self.front_nmr  # Supply frequency, Hz
+
+            print(self.parent.acceleration, self.front_torque)
+
+            """a.append(self.front_torque)
+            b.append(self.front_torque_Nm(self.front_nmr))
+            print(self.front_torque, self.front_torque_Nm(self.front_nmr))"""
 
             self.rear_angular_velocity = self.parent.gearbox.rear_motor_speed
             self.rear_torque = self.parent.gearbox.rear_motor_torque
@@ -187,6 +193,8 @@ class e_tron:
     class Battery:
         def __init__(self, parent, SOC_initial):
             self.parent = parent
+
+            self.voltage = 396  # Nominal battery voltage, V
 
             self.max_energy_capacity_kWh = 95  # Maximum battery energy capacity
             self.min_energy_capacity_kWh = 8.5  # Minimum battery energy capacity  https://ev-database.org/car/1253/Audi-e-tron-55-quattro#charge-table
@@ -249,8 +257,17 @@ class e_tron:
         pass
 
 
+"""a = []
+b = []"""
+
 my_fancy_ev = e_tron()
 
 hwfet = pd.read_csv("hwycol.txt", sep="\t")
 
 my_fancy_ev.simulate(hwfet)
+
+"""from matplotlib import pyplot as plt
+
+plt.plot(list(range(len(a))), a)
+plt.plot(list(range(len(b))), b)
+plt.show()"""
