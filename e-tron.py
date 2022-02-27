@@ -4,6 +4,21 @@ import scipy.integrate
 
 
 class e_tron:
+    class Chassis:
+        def __init__(self, parent):
+            self.parent = parent
+
+            g = 9.81
+
+            self.curb_mass = 2490  # kg
+            self.weight = self.curb_mass * g  # N
+
+            self.parent.grade = 0  # rise/run
+            self.parent.road_angle = np.arctan(self.parent.grade)  # radians
+
+        def step(self):
+            pass
+
     class Wheel:
         def __init__(self, parent):
             self.parent = parent
@@ -133,21 +148,21 @@ class e_tron:
             self.speed_rear = self.parent.gearbox.rear_motor_speed
 
             # Calculate RPM
-            self.nmr_front = self.front_angular_velocity * 60 / (2 * np.pi)
-            self.nmr_rear = self.rear_angular_velocity * 60 / (2 * np.pi)
+            self.nmr_front = self.speed_front * 60 / (2 * np.pi)
+            self.nmr_rear = self.speed_rear * 60 / (2 * np.pi)
 
             # Calculate output torque
-            self.Tm_front = self.front_torque_Nm(self.front_nmr)
-            self.Tm_rear = self.rear_torque_Nm(self.rear_nmr)
+            self.Tm_front = self.front_torque_Nm(self.nmr_front)
+            self.Tm_rear = self.rear_torque_Nm(self.nmr_rear)
 
             # Calculate output power
-            self.Pout_front = self.front_power_kW(self.front_nmr)
-            self.Pout_rear = self.rear_power_kW(self.rear_nmr)
+            self.Pout_front = self.front_power_kW(self.nmr_front)
+            self.Pout_rear = self.rear_power_kW(self.nmr_rear)
 
             # Calculate supply frequencies
             # nmr = 120 * fs / p
-            self.fs_front = self.p / 120 * self.front_nmr  # Front supply frequency, Hz
-            self.fs_rear = self.p / 120 * self.rear_nmr
+            self.fs_front = self.p / 120 * self.nmr_front  # Front supply frequency, Hz
+            self.fs_rear = self.p / 120 * self.nmr_rear
 
     class Battery:
         def __init__(self, parent, SOC_initial):
@@ -168,6 +183,7 @@ class e_tron:
             pass
 
     def __init__(self, SOC_initial=1.00):
+        self.chassis = self.Chassis(self)
         self.wheel = self.Wheel(self)
         self.gearbox = self.Gearbox(self)
         self.motor = self.Motor(self)
@@ -203,6 +219,7 @@ class e_tron:
                 self.ds = 0
                 self.acceleration = 0
 
+            self.chassis.step()
             self.wheel.step()
             self.gearbox.step()
             self.motor.step()
