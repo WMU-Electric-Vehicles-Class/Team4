@@ -437,21 +437,20 @@ class e_tron:
 
             # Vehicle dynamics calculations
             if i > 0:
-                self.prev_time = self.cycle["Time (s)"].iloc[i - 1]
                 self.prev_velocity = self.cycle["Velocity (m/s)"].iloc[i - 1]
+                self.prev_time = self.cycle["Time (s)"].iloc[i - 1]
 
-                dt = self.time - self.prev_time
                 dv = self.velocity - self.prev_velocity
+                dt = self.time - self.prev_time
 
                 # Change in distance
-                ds = scipy.integrate.trapezoid(
+                self.ds = scipy.integrate.trapezoid(
                     y=[self.prev_velocity, self.velocity],
                     dx=dt,
                 )
 
                 self.acceleration = dv / dt
             else:
-                self.dt = 1
                 self.ds = 0
                 self.acceleration = 0
 
