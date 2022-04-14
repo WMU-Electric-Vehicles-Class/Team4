@@ -310,7 +310,7 @@ class e_tron:
             self.energy_consumption = self.parent.motor.energy_consumption
             # print(energy_consumption, self.remaining_energy)
 
-            self.remaining_energy = self.remaining_energy - self.energy_consumption
+            self.remaining_energy -= self.energy_consumption
             self.soc = self.remaining_energy / self.max_energy_capacity
 
             self.depleted = self.remaining_energy <= self.min_energy_capacity
@@ -441,16 +441,17 @@ class e_tron:
                 self.prev_time = self.cycle["Time (s)"].iloc[i - 1]
 
                 dv = self.velocity - self.prev_velocity
-                dt = self.time - self.prev_time
+                self.dt = self.time - self.prev_time
 
                 # Change in distance
                 self.ds = scipy.integrate.trapezoid(
                     y=[self.prev_velocity, self.velocity],
-                    dx=dt,
+                    dx=self.dt,
                 )
 
-                self.acceleration = dv / dt
+                self.acceleration = dv / self.dt
             else:
+                self.dt
                 self.ds = 0
                 self.acceleration = 0
 
