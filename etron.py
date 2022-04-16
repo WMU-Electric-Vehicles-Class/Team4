@@ -451,7 +451,7 @@ class e_tron:
 
                 self.acceleration = dv / self.dt
             else:
-                self.dt
+                self.dt = 1
                 self.ds = 0
                 self.acceleration = 0
 
