@@ -10,7 +10,7 @@ class e_tron:
         def __init__(self, parent):
             self.parent = parent
 
-            self.mass = 2595  # kg
+            self.mass = 2595 + 1.573 + 3 + 20  # kg
             self.weight = self.mass * self.parent.g  # N
 
             # Aerodynamics
@@ -19,7 +19,7 @@ class e_tron:
             self.A = 2.65  # Frontal area, m^2 https://www.auk-kits.co.uk/assets/documents/original/8386-14AudietronAerodynamics.pdf
 
             # Rolling resistance
-            self.mu_rr = 0.015
+            self.mu_rr = 0.010
 
         def step(self):
             road_angle = np.arctan(self.parent.grade)  # radians
@@ -41,13 +41,17 @@ class e_tron:
                 + self.F_grade
             )
 
+            self.parent.driving = self.F_x >= 0
+            self.parent.braking = not self.parent.driving
+
     class Wheel:
         def __init__(self, parent):
             self.parent = parent
 
             # Regenerative braking
-            regen_max_decel_g = 0.3  # g
+            regen_max_decel_g = -0.3  # g
             self.regen_max_decel = regen_max_decel_g * self.parent.g  # m/s^2
+            self.regen_efficiency = 0.70
 
             tire_radius_in = (
                 0.98 * 15.02
@@ -58,16 +62,21 @@ class e_tron:
             F_x = self.parent.chassis.F_x
 
             self.total_torque = F_x * self.tire_radius
+
+            # Regenerative braking
+            if self.parent.driving:
+                self.regen_braking = False
+            elif self.parent.braking and (
+                self.parent.acceleration >= self.regen_max_decel
+            ):
+                self.total_torque *= self.regen_efficiency
+                self.regen_braking = True
+            else:
+                self.total_torque = 0
+                self.regen_braking = False
+
             self.torque_front = 0.40 * self.total_torque
             self.torque_rear = 0.60 * self.total_torque
-
-            self.driving = self.total_torque >= 0
-
-            self.regen_braking = (
-                not self.driving
-                and self.parent.acceleration < 0
-                and self.parent.acceleration >= self.regen_max_decel
-            )
 
             self.speed = self.parent.velocity / self.tire_radius
 
@@ -82,6 +91,9 @@ class e_tron:
             # Rear gearbox torque ratio
             self.ratio_rear = 9.083
 
+            self.efficiency_front = 1.00 - 0.02 - 0.02 - 0.01 - 0.02
+            self.efficiency_rear = 1.00 - 0.02 - 0.01 - 0.01 - 0.02
+
         def step(self):
             wheel_speed = self.parent.wheel.speed
             wheel_torque_front = self.parent.wheel.torque_front
@@ -93,12 +105,16 @@ class e_tron:
             self.motor_torque_rear = wheel_torque_rear / self.ratio_rear
             self.motor_speed_rear = wheel_speed * self.ratio_rear
 
+            if self.parent.driving:
+                self.motor_torque_front /= self.efficiency_front
+                self.motor_torque_rear /= self.efficiency_rear
+            elif self.parent.braking:
+                self.motor_torque_front *= self.efficiency_front
+                self.motor_torque_rear *= self.efficiency_rear
+
     class Motor:
         def __init__(self, parent):
             self.parent = parent
-
-            self.p = 4  # Number of poles
-            self.voltage = 360  # V
 
             # Build front motor efficiency map
             front_eff_data = pd.read_excel(
@@ -121,93 +137,8 @@ class e_tron:
             self.prev_power_in_front = 0
             self.prev_power_in_rear = 0
 
-        def front_torque_Nm(self, rpm):
-            # Piecewise front motor torque vs. speed curve
-
-            x1, y1 = 0, 305
-            x2, y2 = 4250, 305
-            x3, y3 = 9500, 115
-            x4, y4 = 13500, 65
-
-            m1 = (y2 - y1) / (x2 - x1)
-            m2 = (y3 - y2) / (x3 - x2)
-            m3 = (y4 - y3) / (x4 - x3)
-
-            if rpm == 0:
-                return 0
-            elif x1 <= rpm and rpm < x2:
-                return m1 * (rpm - x1) + y1
-            elif x2 <= rpm and rpm < x3:
-                return m2 * (rpm - x2) + y2
-            elif x3 <= rpm and rpm <= x4:
-                return m3 * (rpm - x3) + y3
-            else:
-                raise Exception("Motor velocity out of bounds")
-
-        def front_power_kW(self, rpm):
-            # Piecewise front motor power vs. speed curve
-
-            x1, y1 = 0, 0
-            x2, y2 = 4250, 140
-            x3, y3 = 8250, 140
-            x4, y4 = 13500, 85
-
-            m1 = (y2 - y1) / (x2 - x1)
-            m2 = (y3 - y2) / (x3 - x2)
-            m3 = (y4 - y3) / (x4 - x3)
-
-            if x1 <= rpm and rpm < x2:
-                return m1 * (rpm - x1) + y1
-            elif x2 <= rpm and rpm < x3:
-                return m2 * (rpm - x2) + y2
-            elif x3 <= rpm and rpm <= x4:
-                return m3 * (rpm - x3) + y3
-            else:
-                raise Exception("Motor velocity out of bounds")
-
-        def rear_torque_Nm(self, rpm):
-            # Piecewise rear motor torque vs. speed curve
-
-            x1, y1 = 0, 360
-            x2, y2 = 4800, 360
-            x3, y3 = 8800, 165
-            x4, y4 = 13500, 65
-
-            m1 = (y2 - y1) / (x2 - x1)
-            m2 = (y3 - y2) / (x3 - x2)
-            m3 = (y4 - y3) / (x4 - x3)
-
-            if rpm == 0:
-                return 0
-            elif x1 < rpm and rpm < x2:
-                return m1 * (rpm - x1) + y1
-            elif x2 <= rpm and rpm < x3:
-                return m2 * (rpm - x2) + y2
-            elif x3 <= rpm and rpm <= x4:
-                return m3 * (rpm - x3) + y3
-            else:
-                raise Exception("Motor velocity out of bounds")
-
-        def rear_power_kW(self, rpm):
-            # Piecewise rear motor power vs. speed curve
-
-            x1, y1 = 0, 0
-            x2, y2 = 4250, 173
-            x3, y3 = 8000, 173
-            x4, y4 = 13500, 130
-
-            m1 = (y2 - y1) / (x2 - x1)
-            m2 = (y3 - y2) / (x3 - x2)
-            m3 = (y4 - y3) / (x4 - x3)
-
-            if x1 <= rpm and rpm < x2:
-                return m1 * (rpm - x1) + y1
-            elif x2 <= rpm and rpm < x3:
-                return m2 * (rpm - x2) + y2
-            elif x3 <= rpm and rpm <= x4:
-                return m3 * (rpm - x3) + y3
-            else:
-                raise Exception("Motor velocity out of bounds")
+            # Efficiency to use if torque+speed not in motor map
+            self.fallback_efficiency = 0.95
 
         def step(self):
             # Front motor torque and speed
@@ -229,70 +160,81 @@ class e_tron:
                 self.speed_front, abs(self.torque_front)
             )
             if np.isnan(self.efficiency_front):
-                print(
-                    f"WARNING: Not in front motor map: speed={self.speed_front:.2f} rad/s, torque={self.torque_front:.2f} Nm. Assuming 100% efficiency."
-                )
-                self.efficiency_front = 1.00
+                if self.parent.verbose:
+                    print(
+                        f"WARNING: Not in front motor map: speed={self.speed_front:.2f} rad/s, torque={self.torque_front:.2f} Nm. Assuming {self.fallback_efficiency*100}% efficiency."
+                    )
+                self.efficiency_front = self.fallback_efficiency
             # Rear motor efficiency
             self.efficiency_rear = self.interp_eff_rear(
                 self.speed_rear, abs(self.torque_rear)
             )
             if np.isnan(self.efficiency_rear):
-                print(
-                    f"WARNING: Not in rear motor map: speed={self.speed_rear:.2f} rad/s, torque={self.torque_rear:.2f} Nm. Assuming 100% efficiency."
-                )
-                self.efficiency_rear = 1.00
+                if self.parent.verbose:
+                    print(
+                        f"WARNING: Not in rear motor map: speed={self.speed_rear:.2f} rad/s, torque={self.torque_rear:.2f} Nm. Assuming {self.fallback_efficiency*100}% efficiency."
+                    )
+                self.efficiency_rear = self.fallback_efficiency
 
-            if self.parent.wheel.driving:
-                # Driving: input power is greater than output power
-                # Calculate front motor input power
-                self.power_in_front = (
-                    self.power_out_front / self.efficiency_front
-                    if self.power_out_front >= 0
-                    else 0
-                )
-                # Calculate rear motor input power
-                self.power_in_rear = (
-                    self.power_out_rear / self.efficiency_rear
-                    if self.power_out_rear >= 0
-                    else 0
-                )
-            else:
-                # Braking: output power is greater than input power
-                # Calculate front motor input power
+            # Calculate motor input power
+            if self.parent.driving:
+                self.power_in_front = self.power_out_front / self.efficiency_front
+                self.power_in_rear = self.power_out_rear / self.efficiency_rear
+            elif self.parent.braking:
                 self.power_in_front = self.power_out_front * self.efficiency_front
-                # Calculate rear motor input power
                 self.power_in_rear = self.power_out_rear * self.efficiency_rear
+            self.input_power = self.power_in_front + self.power_in_rear
 
-            # Calculate supply frequencies
-            # nmr = 120 * fs / p
-            self.fs_front = self.p / 120 * self.rpm_front  # Front supply frequency, Hz
-            self.fs_rear = self.p / 120 * self.rpm_rear
+    class Photovoltaics:
+        def __init__(self, parent):
+            self.parent = parent
 
-            # Calculate energy consumption over time step
-            self.energy_in_front = scipy.integrate.trapezoid(
-                y=[self.power_in_front, self.prev_power_in_front],
+            self.area = 3.7026  # m^2
+            self.efficiency = 0.243
+
+        def step(self):
+            self.power_generated = self.parent.solar_irradiance * self.area  # W
+            self.power_generated *= self.efficiency
+
+    class PowerElectronics:
+        def __init__(self, parent):
+            self.parent = parent
+
+            self.motor_elec_efficiency = 0.98
+            self.pv_elec_efficiency = 0.98
+
+            self.prev_power_cons = 0
+
+        def step(self):
+            if self.parent.driving:
+                self.power_cons = (
+                    self.parent.motor.input_power / self.motor_elec_efficiency
+                )
+            elif self.parent.braking:
+                self.power_cons = (
+                    self.parent.motor.input_power * self.motor_elec_efficiency
+                )
+            self.power_gain = (
+                self.parent.photovoltaics.power_generated * self.pv_elec_efficiency
+            )
+
+            self.power_cons = self.power_cons - self.power_gain
+
+            self.energy_cons = scipy.integrate.trapezoid(
+                y=[self.power_cons, self.prev_power_cons],
                 dx=self.parent.dt,
             )
-            self.energy_in_rear = scipy.integrate.trapezoid(
-                y=[self.power_in_rear, self.prev_power_in_rear],
-                dx=self.parent.dt,
-            )
-            self.energy_consumption = self.energy_in_front + self.energy_in_rear
-
-            self.prev_power_in_rear = self.power_in_rear
+            self.prev_power_cons = self.power_cons
 
     class Battery:
         def __init__(self, parent, soc_initial):
             self.parent = parent
 
-            self.voltage = 396  # Nominal battery voltage, V
-
             # https://ev-database.org/car/1253/Audi-e-tron-55-quattro#charge-table
-            max_energy_capacity_kWh = 95
-            useable_energy_capacity_kWh = 86.5
+            max_energy_capacity_kWh = 95.04
+            usable_energy_capacity_kWh = 86.5
             min_energy_capacity_kWh = (
-                max_energy_capacity_kWh - useable_energy_capacity_kWh
+                max_energy_capacity_kWh - usable_energy_capacity_kWh
             )
 
             self.max_energy_capacity = (
@@ -306,108 +248,130 @@ class e_tron:
             self.remaining_energy = self.soc * self.max_energy_capacity  # J
 
         def step(self):
-            # TODO: include auxiliary loads
-            self.energy_consumption = self.parent.motor.energy_consumption
-            # print(energy_consumption, self.remaining_energy)
+            self.energy_cons = self.parent.power_electronics.energy_cons
 
-            self.remaining_energy -= self.energy_consumption
+            self.remaining_energy -= self.energy_cons
             self.soc = self.remaining_energy / self.max_energy_capacity
 
             self.depleted = self.remaining_energy <= self.min_energy_capacity
 
-    class Logger:
+    class Logger(dict):
         def __init__(self, parent):
+            self.__dict__ = self
             self.parent = parent
             length = len(self.parent.cycle)
+
             # Time
-            self.time_s = np.zeros(length)
+            self["Time (s)"] = np.full(length, np.nan)
             # Velocity
-            self.velocity_mps = np.zeros(length)
-            self.velocity_mph = np.zeros(length)
+            self["Velocity (m/s)"] = np.full(length, np.nan)
+            self["Velocity (mph)"] = np.full(length, np.nan)
             # Acceleration
-            self.acceleration_mps2 = np.zeros(length)
-            self.acceleration_g = np.zeros(length)
+            self["Acceleration (m/s^2)"] = np.full(length, np.nan)
+            self["Acceleration (g)"] = np.full(length, np.nan)
             # Distance
-            self.distance = np.zeros(length)
-            self.distance_mi = np.zeros(length)
+            self["Distance (m)"] = np.full(length, np.nan)
+            self["Distance (mi)"] = np.full(length, np.nan)
             # Grade
-            self.grade = np.zeros(length)
+            self["Grade"] = np.full(length, np.nan)
             # Chassis
-            self.F_grade = np.zeros(length)
-            self.F_rr = np.zeros(length)
-            self.F_drag = np.zeros(length)
-            self.F_x = np.zeros(length)
+            self["Fgrade"] = np.full(length, np.nan)
+            self["Frr"] = np.full(length, np.nan)
+            self["Fdrag"] = np.full(length, np.nan)
+            self["Fx"] = np.full(length, np.nan)
             # Wheel
-            self.driving = np.zeros(length)
-            self.wheel_torque_front = np.zeros(length)
-            self.wheel_torque_rear = np.zeros(length)
-            self.regen_braking = np.zeros(length)
-            self.wheel_speed = np.zeros(length)
+            self["Driving"] = np.full(length, np.nan)
+            self["Braking"] = np.full(length, np.nan)
+            self["Front wheel torque"] = np.full(length, np.nan)
+            self["Rear wheel torque"] = np.full(length, np.nan)
+            self["Regenerative braking"] = np.full(length, np.nan)
+            self["Wheel speed (rad/s)"] = np.full(length, np.nan)
             # Motor
-            self.motor_torque_front = np.zeros(length)
-            self.motor_torque_rear = np.zeros(length)
-            self.motor_speed_front = np.zeros(length)
-            self.motor_speed_rear = np.zeros(length)
-            self.motor_p_out_front = np.zeros(length)
-            self.motor_p_out_rear = np.zeros(length)
-            self.motor_effy_front = np.zeros(length)
-            self.motor_effy_rear = np.zeros(length)
-            self.motor_p_in_front = np.zeros(length)
-            self.motor_p_in_rear = np.zeros(length)
-            self.motor_energy_cons_front = np.zeros(length)
-            self.motor_energy_cons_rear = np.zeros(length)
-            self.motor_energy_cons = np.zeros(length)
+            self["Front motor torque (Nm)"] = np.full(length, np.nan)
+            self["Rear motor torque (Nm)"] = np.full(length, np.nan)
+            self["Front motor speed (rad/s)"] = np.full(length, np.nan)
+            self["Rear motor speed (rad/s)"] = np.full(length, np.nan)
+            self["Front motor power (W)"] = np.full(length, np.nan)
+            self["Rear motor power (W)"] = np.full(length, np.nan)
+            self["Front motor efficiency"] = np.full(length, np.nan)
+            self["Rear motor efficiency"] = np.full(length, np.nan)
+            self["Front motor input power (W)"] = np.full(length, np.nan)
+            self["Rear motor input power (W)"] = np.full(length, np.nan)
+            self["Motor input power (W)"] = np.full(length, np.nan)
+            # Photovoltaics
+            self["PV power generated (W)"] = np.full(length, np.nan)
+            # Power Electronics
+            self["Power consumed (W)"] = np.full(length, np.nan)
+            self["Power generated (W)"] = np.full(length, np.nan)
+            self["Energy consumed (J)"] = np.full(length, np.nan)
             # Battery
-            self.battery_energy = np.zeros(length)
-            self.soc = np.zeros(length)
-            self.battery_depleted = np.zeros(length)
+            self["Battery energy (J)"] = np.full(length, np.nan)
+            self["SOC"] = np.full(length, np.nan)
+            self["Battery depleted"] = np.full(length, np.nan)
 
         def log_data(self):
             i = self.parent.i
             # Time
-            self.time_s[i] = self.parent.time
+            self["Time (s)"][i] = self.parent.time
             # Velocity
-            self.velocity_mps[i] = self.parent.velocity
-            self.velocity_mph[i] = self.velocity_mph[i] / self.parent.MPH_TO_MPS
+            self["Velocity (m/s)"][i] = self.parent.velocity
+            self["Velocity (mph)"][i] = (
+                self["Velocity (m/s)"][i] / self.parent.MPH_TO_MPS
+            )
             # Acceleration
-            self.acceleration_mps2[i] = self.parent.acceleration
-            self.acceleration_g[i] = self.acceleration_mps2[i] / self.parent.g
+            self["Acceleration (m/s^2)"][i] = self.parent.acceleration
+            self["Acceleration (g)"][i] = (
+                self["Acceleration (m/s^2)"][i] / self.parent.g
+            )
             # Distance
-            self.distance[i] = self.distance[i - 1] + self.parent.ds
-            self.distance_mi[i] = self.distance[i] * self.parent.M_TO_MI
+            if i == 0:
+                self["Distance (m)"][i] = self.parent.ds
+            else:
+                self["Distance (m)"][i] = self["Distance (m)"][i - 1] + self.parent.ds
+            self["Distance (mi)"][i] = self["Distance (m)"][i] * self.parent.M_TO_MI
+            # print(self["Distance (mi)"][i])
             # Grade
-            self.grade[i] = self.parent.grade
+            self["Grade"][i] = self.parent.grade
             # Chassis
-            self.F_grade[i] = self.parent.chassis.F_grade
-            self.F_rr[i] = self.parent.chassis.F_rr
-            self.F_drag[i] = self.parent.chassis.F_drag
-            self.F_grade[i] = self.parent.chassis.F_x
+            self["Fgrade"][i] = self.parent.chassis.F_grade
+            self["Frr"][i] = self.parent.chassis.F_rr
+            self["Fdrag"][i] = self.parent.chassis.F_drag
+            self["Fx"][i] = self.parent.chassis.F_x
             # Wheel
-            self.driving[i] = self.parent.wheel.driving
-            self.wheel_torque_front[i] = self.parent.wheel.torque_front
-            self.wheel_torque_rear[i] = self.parent.wheel.torque_rear
-            self.regen_braking[i] = self.parent.wheel.regen_braking
-            self.wheel_speed[i] = self.parent.wheel.speed
+            self["Driving"][i] = self.parent.driving
+            self["Braking"][i] = self.parent.braking
+            self["Front wheel torque"][i] = self.parent.wheel.torque_front
+            self["Rear wheel torque"][i] = self.parent.wheel.torque_rear
+            self["Regenerative braking"][i] = self.parent.wheel.regen_braking
+            self["Wheel speed (rad/s)"][i] = self.parent.wheel.speed
             # Motor
-            self.motor_torque_front[i] = self.parent.motor.torque_front
-            self.motor_torque_rear[i] = self.parent.motor.torque_rear
-            self.motor_speed_front[i] = self.parent.motor.speed_front
-            self.motor_speed_rear[i] = self.parent.motor.speed_rear
-            self.motor_p_out_front[i] = self.parent.motor.power_out_front
-            self.motor_p_out_rear[i] = self.parent.motor.power_out_rear
-            self.motor_effy_front[i] = self.parent.motor.efficiency_front
-            self.motor_effy_rear[i] = self.parent.motor.efficiency_rear
-            self.motor_p_in_front[i] = self.parent.motor.power_in_front
-            self.motor_p_in_rear[i] = self.parent.motor.power_in_rear
-            self.motor_energy_cons_front[i] = self.parent.motor.energy_in_front
-            self.motor_energy_cons_rear[i] = self.parent.motor.energy_in_rear
-            self.motor_energy_cons[i] = self.parent.motor.energy_consumption
+            self["Front motor torque (Nm)"][i] = self.parent.motor.torque_front
+            self["Rear motor torque (Nm)"][i] = self.parent.motor.torque_rear
+            self["Front motor speed (rad/s)"][i] = self.parent.motor.speed_front
+            self["Rear motor speed (rad/s)"][i] = self.parent.motor.speed_rear
+            self["Front motor power (W)"][i] = self.parent.motor.power_out_front
+            self["Rear motor power (W)"][i] = self.parent.motor.power_out_rear
+            self["Front motor efficiency"][i] = self.parent.motor.efficiency_front
+            self["Rear motor efficiency"][i] = self.parent.motor.efficiency_rear
+            self["Front motor input power (W)"][i] = self.parent.motor.power_in_front
+            self["Rear motor input power (W)"][i] = self.parent.motor.power_in_rear
+            self["Motor input power (W)"][i] = self.parent.motor.input_power
+            # Photovoltaics
+            self["PV power generated (W)"][
+                i
+            ] = self.parent.photovoltaics.power_generated
+            # Power Electronics
+            self["Power consumed (W)"][i] = self.parent.power_electronics.power_cons
+            self["Power generated (W)"][i] = self.parent.power_electronics.power_gain
+            self["Energy consumed (J)"][i] = self.parent.power_electronics.energy_cons
             # Battery
-            self.battery_energy[i] = self.parent.battery.remaining_energy
-            self.soc[i] = self.parent.battery.soc
-            self.battery_depleted[i] = self.parent.battery.depleted
+            self["Battery energy (J)"][i] = self.parent.battery.remaining_energy
+            self["SOC"][i] = self.parent.battery.soc
+            self["Battery depleted"][i] = self.parent.battery.depleted
 
-    def __init__(self, soc_initial=0.90):
+    def __init__(self, initial_soc=1.00, verbose=False):
+        self.verbose = verbose
+
         self.g = 9.81
         # Conversion factors
         self.MPH_TO_MPS = 0.44704
@@ -419,7 +383,12 @@ class e_tron:
         self.wheel = self.Wheel(self)
         self.gearbox = self.Gearbox(self)
         self.motor = self.Motor(self)
-        self.battery = self.Battery(self, soc_initial)
+        self.photovoltaics = self.Photovoltaics(self)
+        self.power_electronics = self.PowerElectronics(self)
+        self.battery = self.Battery(self, initial_soc)
+
+        self.grade = 0
+        self.solar_irradiance = 0
 
     def simulate(self, cycle):
         self.cycle = cycle
@@ -427,13 +396,12 @@ class e_tron:
         self.log = self.Logger(self)
 
         # Convert velocity to meters per second
-        cycle["Velocity (m/s)"] = cycle["Velocity (mph)"] * self.MPH_TO_MPS
+        self.cycle["Velocity (m/s)"] = self.cycle["Velocity (mph)"] * self.MPH_TO_MPS
 
         for i in range(len(self.cycle)):
             self.i = i
             self.time = self.cycle["Time (s)"].iloc[i]
             self.velocity = self.cycle["Velocity (m/s)"].iloc[i]
-            self.grade = 0  # TODO: replace
 
             # Vehicle dynamics calculations
             if i > 0:
@@ -459,34 +427,32 @@ class e_tron:
             self.wheel.step()
             self.gearbox.step()
             self.motor.step()
+            self.photovoltaics.step()
+            self.power_electronics.step()
             self.battery.step()
 
             self.log.log_data()
 
+            if self.battery.depleted:
+                break
+
+        for key in self.log:
+            if type(self.log[key]) is np.ndarray:
+                self.log[key] = self.log[key][~np.isnan(self.log[key])]
+
 
 if __name__ == "__main__":
-    my_fancy_ev = e_tron()
+    cycle = pd.read_csv("data/wltp-3.csv", sep="\t")
 
-    hwfet = pd.read_csv("data/hwycol.txt", sep="\t")
+    dist_mi = 0
+    soc = 1.00
 
-    my_fancy_ev.simulate(hwfet)
-
-    from matplotlib import pyplot as plt
-    import seaborn as sns
-
-    sns.set()
-
-    x = my_fancy_ev.log.time_s
-    y = my_fancy_ev.log.soc
-
-    plt.rcParams["font.family"] = "Times New Roman"
-    fig = plt.figure(figsize=(10, 4))
-    ax1 = fig.add_subplot(111)
-
-    ax1.plot(x, y * 100, color="C0")
-    ax1.set_title("Audi e-tron: SOC vs. Time", fontsize="large", fontweight="bold")
-    ax1.set_xlabel("Time [sec]", fontsize="large")
-    ax1.set_ylabel("SOC [%]", fontsize="large")
-
-    fig.tight_layout()
-    plt.savefig("plots/SOC vs time regen new.png")
+    print("Simulating...")
+    while True:
+        ev = e_tron(initial_soc=soc)
+        ev.simulate(cycle)
+        soc = ev.log["SOC"][-1]
+        dist_mi += ev.log["Distance (mi)"][-1]
+        if ev.battery.depleted:
+            break
+    print(f"Range: {dist_mi:.06f} mi")
