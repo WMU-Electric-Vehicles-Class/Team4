@@ -1,1 +1,0 @@
-print("republic of gamers")
